@@ -6,19 +6,17 @@ there is one change wrt. to the default server_url and some simple refactoring
 where the implementation was unnecessarily complex
 """
 
+import logging
 from collections import namedtuple
 from functools import total_ordering
-import logging
-import signal
-import time
-from six.moves.queue import PriorityQueue
-from subprocess import Popen, PIPE
 from threading import Thread
+
+from six.moves.queue import PriorityQueue
+
+from keras.callbacks import Callback
 from bokeh.document import Document
 from bokeh.plotting import figure
 from bokeh.session import Session
-from keras.callbacks import Callback
-
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +31,7 @@ class PlottingExtension(Callback):
         The name of the Bokeh document. Use a different name for each
         experiment if you are storing your plots.
 
-    ##start_server : Removed, as it has a number of problems inkl. zombi bokeh processes!
+    ##start_server : Removed, as it has a number of flaws inkl. zombi bokeh-server processes!
 
     server_url : str, optional
         Url of the bokeh-server. Ex: when starting the bokeh-server with
@@ -127,7 +125,7 @@ class Plot(PlottingExtension):
 
     @staticmethod
     def get_metric_name(metric):
-        """get the name for a gicen metric,
+        """get the name for given metric,
 
         if metric is a string this works like the identity function,
         excepts, that "accuaracy" becomes "acc".
@@ -147,7 +145,7 @@ class Plot(PlottingExtension):
 
     def __init__(self, document_name, channels, after_every_batch=False,
                  clear_document=True, server_url=None):
-        super(Plot, self).__init__(document_name, server_url=server_url)
+        super(Plot, self).__init__(document_name, server_url=server_url, clear_document=clear_document)
         self.after_every_batch = after_every_batch
         self._iteration = 0
 
@@ -180,7 +178,9 @@ class Plot(PlottingExtension):
 
     def on_batch_end(self, batch, logs={}):
         if self.after_every_batch:
-            self._iteration = batch
+            # the batch(nr) variable is relative to the epoch, so we
+            # count up cross epoch by our selve
+            self._iteration += 1
             self.on_callback(logs)
 
     def on_epoch_end(self, epoch, logs={}):
@@ -191,24 +191,25 @@ class Plot(PlottingExtension):
     def on_callback(self, logs, after_training=False):
         super(Plot, self).on_callback(logs)
 
-        for metric in self.params['metrics']:
-            # logs does not always contain all metrics in keras
-            # TODO error[log] if len(logs) > 0 and metric not in logs
-            if metric in self.metric2figure and metric in logs:
-                value = logs[metric]
-                if metric not in self.data_sources:
-                    line_color = self.metric2color[metric]
-                    fig = self.metric2figure[metric]
-                    fig.line([self._iteration], [value],
-                             legend=metric, name=metric,
-                             line_color=line_color)
-                    self.document.add(fig)
-                    renderer = fig.select({ 'name': metric })
-                    self.data_sources[metric] = renderer[0].data_source
-                else:
-                    self.data_sources[metric].data['x'].append(self._iteration)
-                    self.data_sources[metric].data['y'].append(value)
-                    self.store_data(self.data_sources[metric])
+        # in before/after traing callbacks logs is empty!
+        # so we don't need to run any data adding tasks.
+        if len(logs) > 0:
+            for metric in self.params['metrics']:
+                if metric in self.metric2figure:
+                    value = logs[metric]
+                    if metric not in self.data_sources:
+                        line_color = self.metric2color[metric]
+                        fig = self.metric2figure[metric]
+                        fig.line([self._iteration], [value],
+                                 legend=metric, name=metric,
+                                 line_color=line_color)
+                        self.document.add(fig)
+                        renderer = fig.select({ 'name': metric })
+                        self.data_sources[metric] = renderer[0].data_source
+                    else:
+                        self.data_sources[metric].data['x'].append(self._iteration)
+                        self.data_sources[metric].data['y'].append(value)
+                        self.store_data(self.data_sources[metric])
         self.push_document(after_training)
 
 
